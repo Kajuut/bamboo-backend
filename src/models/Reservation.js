@@ -25,6 +25,8 @@ const reservationSchema = new mongoose.Schema({
   mesas_adicionales: { type: Number, default: 0 },
   solicitudes_adicionales: { type: String, default: '' },
 
+  creado_por: { type: String, default: 'Cliente Web / Manual' },
+
   historial_modificaciones: [
     {
         usuario: { type: String, required: true },

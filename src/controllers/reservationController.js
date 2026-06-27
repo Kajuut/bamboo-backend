@@ -6,6 +6,14 @@ exports.crearReserva = async (req, res) => {
     // req.body contiene toda la información que enviaremos desde el formulario web
     const nuevaReserva = new Reservation(req.body);
     
+    // 🚀 CANDADO DE RESPALDO: Si por un error de red el frontend no envía el parámetro,
+    // el backend lo extrae de la sesión activa (req.user) antes de impactar Atlas.
+    if (!nuevaReserva.creado_por || nuevaReserva.creado_por === 'Cliente Web / Manual') {
+        if (req.user && req.user.nombre) {
+            nuevaReserva.creado_por = req.user.nombre;
+        }
+    }
+    
     // Guardamos la reserva en MongoDB
     const reservaGuardada = await nuevaReserva.save();
     

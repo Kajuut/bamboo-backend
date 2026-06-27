@@ -147,7 +147,8 @@ exports.actualizarReserva = async (req, res) => {
         const idReserva = req.params.id;
         const datosNuevos = req.body;
         
-        const nombreAdministrador = req.user ? req.user.nombre : "Alexander";
+        // 🔮 SOLUCIÓN: Si viene usuario_accion del frontend lo usa, si no, busca el token o el fallback
+        const nombreAdministrador = datosNuevos.usuario_accion || (req.user ? req.user.nombre : "Alexander");
         const motivoCambio = datosNuevos.motivo_modificacion || "Actualización general de rutina";
 
         const reservaPrevia = await Reservation.findById(idReserva);
@@ -212,7 +213,7 @@ exports.actualizarReserva = async (req, res) => {
         if (reservaPrevia.mesas_adicionales !== datosNuevos.mesas_adicionales) {
             bitacoraCambios.push(`• <b>Mesas Extra:</b> De ${reservaPrevia.mesas_adicionales || 0} a ${datosNuevos.mesas_adicionales} unidades`);
         }
-       if (reservaPrevia.solicitudes_adicionales !== datosNuevos.solicitudes_adicionales) {
+        if (reservaPrevia.solicitudes_adicionales !== datosNuevos.solicitudes_adicionales) {
             const notasAntes = reservaPrevia.solicitudes_adicionales ? reservaPrevia.solicitudes_adicionales.trim() : 'Sin especificaciones';
             const notasNuevas = datosNuevos.solicitudes_adicionales ? datosNuevos.solicitudes_adicionales.trim() : 'Sin especificaciones';
             
@@ -246,7 +247,6 @@ exports.actualizarReserva = async (req, res) => {
                     horas_extras: datosNuevos.horas_extras,
                     sillas_adicionales: datosNuevos.sillas_adicionales,
                     mesas_adicionales: datosNuevos.mesas_adicionales,
-                    // ⚠️ SOLUCIÓN: Agregamos las solicitudes_adicionales al set dinámico de Mongoose
                     solicitudes_adicionales: datosNuevos.solicitudes_adicionales, 
                     total_calculado: datosNuevos.total_calculado
                 },

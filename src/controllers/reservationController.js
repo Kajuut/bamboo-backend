@@ -494,3 +494,22 @@ exports.listarRecibosDev = (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+// Endpoint de emergencia para destruir archivos físicos por nombre desde la ventana secreta
+exports.borrarReciboDirectoDev = (req, res) => {
+    try {
+        const path = require('path');
+        const fs = require('fs');
+        const { filename } = req.params;
+        
+        const pathArchivo = path.join(process.cwd(), 'public/recibos', filename);
+
+        if (fs.existsSync(pathArchivo)) {
+            fs.unlinkSync(pathArchivo); // Borrado fulminante del disco
+            return res.json({ mensaje: `Archivo ${filename} eliminado con éxito del servidor.` });
+        } else {
+            return res.status(404).json({ mensaje: "El archivo no se encuentra en el almacenamiento." });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};

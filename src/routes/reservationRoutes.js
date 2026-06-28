@@ -31,5 +31,7 @@ router.delete('/:id/recibo', reservationController.eliminarReciboManual);
 
 // 🕶️ Ruta secreta para ver la lista de PDFs desde el navegador en plan gratuito
 router.get('/dev/lista-recibos', reservationController.listarRecibosDev);
+// Ruta de desarrollo para eliminar PDFs directamente por nombre de archivo
+router.delete('/dev/borrar-recibo/:filename', reservationController.borrarReciboDirectoDev);
 
 module.exports = router;

@@ -13,16 +13,16 @@ require('dns').setDefaultResultOrder('ipv4first');
 // Función para generar el PDF físicamente en el servidor usando tus coordenadas exactas
 const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
     try {
-        // Rutas de almacenamiento local en el servidor (Render)
-        const plantillaPath = path.join(__dirname, '../templates/Recibo.pdf');
-        const carpetaDestino = path.join(__dirname, '../public/recibos');
+        // 🚀 SOLUCIÓN DEFINITIVA DE RUTAS: process.cwd() apunta a la raíz real de tu proyecto en Render
+        const plantillaPath = path.join(process.cwd(), 'templates/Recibo.pdf');
+        const carpetaDestino = path.join(process.cwd(), 'public/recibos');
 
         if (!fs.existsSync(carpetaDestino)) {
             fs.mkdirSync(carpetaDestino, { recursive: true });
         }
 
         if (!fs.existsSync(plantillaPath)) {
-            console.error("⚠️ Plantilla Recibo.pdf no encontrada en la carpeta templates.");
+            console.error("⚠️ Plantilla Recibo.pdf no encontrada en la raíz: templates/Recibo.pdf");
             return null;
         }
 
@@ -33,7 +33,6 @@ const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
         const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
         const fontNormal = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-        // Formateo de fechas de creación en vivo
         const hoy = new Date();
         const diaCreacion = String(hoy.getDate());
         const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
@@ -48,7 +47,6 @@ const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
         
         const rangoPagoStr = `${diaCreacion}/${String(hoy.getMonth()+1).padStart(2,'0')} a ${fechaEvObj.getUTCDate()}/${String(fechaEvObj.getUTCMonth()+1).padStart(2,'0')}`;
 
-        // 🗺️ MAPA DE COORDENADAS EXACTAS PROBADAS Y CONFIRMADAS
         primeraPagina.drawText(diaCreacion, { x: 243, y: 438, size: 20, font: fontBold });
         primeraPagina.drawText(mesCreacion, { x: 346, y: 438, size: 20, font: fontBold });
         primeraPagina.drawText(anioCreacion, { x: 443, y: 438, size: 20, font: fontBold });
@@ -57,7 +55,6 @@ const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
         primeraPagina.drawText(reserva.nombre_cliente, { x: 155, y: 390, size: 18, font: fontBold });
         primeraPagina.drawText(reserva.paquete || 'Ninguno', { x: 273, y: 300, size: 20, font: fontBold });
 
-        // Activación de marcas según el tipo de cobro configurado
         if (reserva.tipo_cobro === 'efectivo') primeraPagina.drawText('X', { x: 191, y: 233, size: 15, font: fontBold });
         if (reserva.tipo_cobro === 'cheque') primeraPagina.drawText('X', { x: 191, y: 204, size: 15, font: fontBold });
         if (reserva.tipo_cobro === 'transferencia') primeraPagina.drawText('X', { x: 191, y: 176, size: 15, font: fontBold });
@@ -88,19 +85,21 @@ const enviarReciboPorCorreo = async (reserva, filename) => {
         const transporter = nodemailer.createTransport({
             host: 'smtp.gmail.com',
             port: 465,
-            secure: true, // Puerto seguro para transferencias SSL
+            secure: true, 
+            family: 4, // 🔌 SOLUCIÓN AL ENETUNREACH: Fuerza a la librería a usar estrictamente IPv4 en Render
             auth: {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASS 
             },
-            connectionTimeout: 10000, // Máximo 10 segundos de espera. Si no conecta, aborta y no congela
+            connectionTimeout: 10000, 
             greetingTimeout: 5000
         });
 
-        const filePath = path.join(__dirname, '../public/recibos', filename);
+        // Apuntamos a la carpeta raíz pública de forma segura
+        const filePath = path.join(process.cwd(), 'public/recibos', filename);
 
         const mailOptions = {
-            from: `"Salón BAMBOO" <${process.env.EMAIL_USER || 'bamboo.salon.cancun@gmail.com'}>`,
+            from: `"Salón BAMBOO" <${process.env.EMAIL_USER}>`,
             to: reserva.correo,
             subject: `Confirmación de Recepción y Recibo Digital - Folio ${reserva._id.toString().substring(0,8).toUpperCase()}`,
             html: `<p>Hola <b>${reserva.nombre_cliente}</b>,</p>

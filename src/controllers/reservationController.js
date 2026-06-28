@@ -79,46 +79,57 @@ const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
 };
 
 // Módulo de envíos automatizados por Nodemailer (Gmail)
+// ========================================================
+// ✉️ MÓDULO DE ENVÍOS PROFESIONALES VÍA RESEND API (HTTPS)
+// ========================================================
 const enviarReciboPorCorreo = async (reserva, filename) => {
     if (!reserva.correo || reserva.correo === 'No proporcionado') return;
 
     try {
-        const transporter = nodemailer.createTransport({
-            host: 'smtp.gmail.com',
-            port: 587,
-            secure: false, 
-            // 🔌 EL CANDADO DEFINITIVO: Obliga a Nodemailer a resolver el dominio usando estrictamente IPv4
-            lookup: (hostname, options, callback) => {
-                dns.lookup(hostname, { family: 4 }, (err, address, family) => {
-                    callback(err, address, family);
-                });
+        // Apuntamos a la carpeta raíz pública de forma absoluta y segura
+        const filePath = path.join(process.cwd(), 'public/recibos', filename);
+        
+        if (!fs.existsSync(filePath)) {
+            console.error(`⚠️ No se pudo enviar el correo: El archivo ${filename} no existe en el disco.`);
+            return;
+        }
+
+        // Convertimos el PDF físico en una cadena binaria Base64 para mandarlo por la API
+        const pdfEnBase64 = fs.readFileSync(filePath).toString('base64');
+
+        // Disparamos la petición HTTPS directa al puerto 443 de Resend (Imposible de bloquear por Render)
+        const respuestaAPI = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+                'Content-Type': 'application/json'
             },
-            auth: {
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS 
-            },
-            connectionTimeout: 10000, 
-            greetingTimeout: 5000
+            body: JSON.stringify({
+                from: 'Salon BAMBOO <onboarding@resend.dev>', // Al verificar tu dominio propio en Resend, podrás cambiar esto por tu correo real
+                to: reserva.correo,
+                subject: `Confirmación de Recepción y Recibo Digital - Folio ${reserva._id.toString().substring(0,8).toUpperCase()}`,
+                html: `<p>Hola <b>${reserva.nombre_cliente}</b>,</p>
+                       <p>Hemos generado con éxito el comprobante digital de tu movimiento financiero para el evento programado el día <b>${new Date(reserva.fecha_evento).toLocaleDateString('es-MX')}</b>.</p>
+                       <p>Adjunto a este correo encontrarás el documento PDF oficial correspondiente a tu recibo de arrendamiento.</p>
+                       <br><p><i>Este es un correo automático, no es necesario responder. ¡Gracias por confiar en BAMBOO!</i></p>`,
+                attachments: [
+                    {
+                        filename: 'Recibo_Bamboo.pdf',
+                        content: pdfEnBase64 // Adjuntamos el archivo codificado de forma limpia
+                    }
+                ]
+            })
         });
 
-        // Apuntamos a la carpeta raíz pública de forma segura
-        const filePath = path.join(process.cwd(), 'public/recibos', filename);
+        if (respuestaAPI.ok) {
+            console.log(`✉️ ¡Recibo enviado con éxito vía Resend API a la dirección: ${reserva.correo}!`);
+        } else {
+            const errorDetalle = await respuestaAPI.json();
+            console.error("⚠️ Fallo en el servidor de Resend API:", errorDetalle);
+        }
 
-        const mailOptions = {
-            from: `"Salón BAMBOO" <${process.env.EMAIL_USER}>`,
-            to: reserva.correo,
-            subject: `Confirmación de Recepción y Recibo Digital - Folio ${reserva._id.toString().substring(0,8).toUpperCase()}`,
-            html: `<p>Hola <b>${reserva.nombre_cliente}</b>,</p>
-                   <p>Hemos generado con éxito el comprobante digital de tu movimiento financiero para el evento programado el día <b>${new Date(reserva.fecha_evento).toLocaleDateString('es-MX')}</b>.</p>
-                   <p>Adjunto a este correo encontrarás el documento PDF oficial correspondiente a tu recibo de arrendamiento.</p>
-                   <br><p><i>Este es un correo automático, no es necesario responder. ¡Gracias por confiar en BAMBOO!</i></p>`,
-            attachments: [{ filename: 'Recibo_Bamboo.pdf', path: filePath }]
-        };
-
-        await transporter.sendMail(mailOptions);
-        console.log(`✉️ Correo enviado con éxito a: ${reserva.correo}`);
     } catch (error) {
-        console.error("⚠️ No se pudo despachar el correo electrónico:", error.message);
+        console.error("⚠️ Error crítico en el proceso de despacho por API:", error.message);
     }
 };
 
@@ -182,9 +193,15 @@ exports.eliminarReserva = async (req, res) => {
     const { id } = req.params; 
     const reserva = await Reservation.findById(id);
     
+    // Si la reserva existe y tiene un recibo registrado, lo destruimos del disco
     if (reserva && reserva.recibo_cloud_id) {
-        const pathArchivo = path.join(__dirname, '../public/recibos', reserva.recibo_cloud_id);
-        if (fs.existsSync(pathArchivo)) fs.unlinkSync(pathArchivo);
+        // 🚀 RUTA CORREGIDA: Apunta exactamente a la raíz real donde se guardan tus PDFs
+        const pathArchivo = path.join(process.cwd(), 'public/recibos', reserva.recibo_cloud_id);
+        
+        if (fs.existsSync(pathArchivo)) {
+            fs.unlinkSync(pathArchivo);
+            console.log(`🗑️ Archivo físico purgado con éxito al eliminar reserva: ${reserva.recibo_cloud_id}`);
+        }
     }
 
     const reservaEliminada = await Reservation.findByIdAndDelete(id);

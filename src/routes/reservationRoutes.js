@@ -26,4 +26,7 @@ router.get('/todas', reservationController.obtenerTodasLasReservas);
 router.put('/:id', reservationController.actualizarReserva);
 router.put('/:id/anticipo', reservationController.incrementarAnticipo);
 
+// ✨ NUEVA RUTA: Eliminación manual de un recibo digital antes de tiempo
+router.delete('/:id/recibo', reservationController.eliminarReciboManual);
+
 module.exports = router;

@@ -34,7 +34,7 @@ const reservationSchema = new mongoose.Schema({
         motivo: { type: String, default: "Sin motivo especificado" },
         detalles: { type: String, required: true }
     }
-],
+  ],
   
   // Datos Administrativos
   estado: { 
@@ -45,10 +45,17 @@ const reservationSchema = new mongoose.Schema({
   anticipo_pagado: { type: Number, default: 0 },
   total_calculado: { type: Number, default: 0 }, 
 
+  // ✨ NUEVOS CAMPOS DEL PASO 1 (MÉTODO DE PAGO Y AUDITORÍA DE RECIBOS)
+  tipo_cobro: { 
+    type: String, 
+    enum: ['efectivo', 'cheque', 'transferencia', 'ninguno'], 
+    default: 'ninguno' 
+  },
+  recibo_url: { type: String, default: '' },       // Enlace para descargar desde el frontend
+  recibo_cloud_id: { type: String, default: '' },  // Nombre del archivo físico para su eliminación
+
   // Comodín para futuros ajustes
   datos_extra: { type: mongoose.Schema.Types.Mixed, default: {} }
-
-  
 
 }, { 
   timestamps: true 

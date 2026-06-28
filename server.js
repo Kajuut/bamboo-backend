@@ -7,7 +7,8 @@ const app = express();
 
 // Configuraciones básicas (Middlewares)
 app.use(cors({ origin: '*' })); // Permite que tu futura página web se comunique con este servidor
-app.use(express.json()); // Permite que el servidor entienda datos en formato JSON
+app.use(express.json());
+app.use(express.static('public')); // Permite que el servidor entienda datos en formato JSON
 
 // Importar las rutas
 const reservationRoutes = require('./src/routes/reservationRoutes');

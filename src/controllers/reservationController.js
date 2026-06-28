@@ -1,144 +1,215 @@
 const Reservation = require('../models/Reservation');
+const fs = require('fs');
+const path = require('path');
+const nodemailer = require('nodemailer');
+const cron = require('node-cron');
+const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 
-// Función para recibir datos y crear una reserva nueva
+// ========================================================
+// 🧮 FUNCIONES AUXILIARES DE SOPORTE (PDF Y EMAIL)
+// ========================================================
+
+// Función para generar el PDF físicamente en el servidor usando tus coordenadas exactas
+const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
+    try {
+        // Rutas de almacenamiento local en el servidor (Render)
+        const plantillaPath = path.join(__dirname, '../templates/Recibo.pdf');
+        const carpetaDestino = path.join(__dirname, '../public/recibos');
+
+        if (!fs.existsSync(carpetaDestino)) {
+            fs.mkdirSync(carpetaDestino, { recursive: true });
+        }
+
+        if (!fs.existsSync(plantillaPath)) {
+            console.error("⚠️ Plantilla Recibo.pdf no encontrada en la carpeta templates.");
+            return null;
+        }
+
+        const fileBuffer = fs.readFileSync(plantillaPath);
+        const pdfDoc = await PDFDocument.load(fileBuffer);
+        const primeraPagina = pdfDoc.getPages()[0];
+
+        const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+        const fontNormal = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+        // Formateo de fechas de creación en vivo
+        const hoy = new Date();
+        const diaCreacion = String(hoy.getDate());
+        const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+        const mesCreacion = meses[hoy.getMonth()];
+        const anioCreacion = String(hoy.getFullYear());
+
+        const totalStr = `$${Number(reserva.total_calculado || 0).toLocaleString('es-MX')}`;
+        const liquidarStr = `$${Number((reserva.total_calculado || 0) - (reserva.anticipo_pagado || 0)).toLocaleString('es-MX')}`;
+        
+        const fechaEvObj = new Date(reserva.fecha_evento);
+        const fechaEventoStr = `${fechaEvObj.getUTCDate()} DE ${meses[fechaEvObj.getUTCMonth()].toUpperCase()} DEL ${fechaEvObj.getUTCFullYear()}`;
+        
+        const rangoPagoStr = `${diaCreacion}/${String(hoy.getMonth()+1).padStart(2,'0')} a ${fechaEvObj.getUTCDate()}/${String(fechaEvObj.getUTCMonth()+1).padStart(2,'0')}`;
+
+        // 🗺️ MAPA DE COORDENADAS EXACTAS PROBADAS Y CONFIRMADAS
+        primeraPagina.drawText(diaCreacion, { x: 243, y: 438, size: 20, font: fontBold });
+        primeraPagina.drawText(mesCreacion, { x: 346, y: 438, size: 20, font: fontBold });
+        primeraPagina.drawText(anioCreacion, { x: 443, y: 438, size: 20, font: fontBold });
+        primeraPagina.drawText(totalStr, { x: 650, y: 445, size: 18, font: fontBold });
+        primeraPagina.drawText(liquidarStr, { x: 650, y: 385, size: 18, font: fontBold });
+        primeraPagina.drawText(reserva.nombre_cliente, { x: 155, y: 390, size: 18, font: fontBold });
+        primeraPagina.drawText(reserva.paquete || 'Ninguno', { x: 273, y: 300, size: 20, font: fontBold });
+
+        // Activación de marcas según el tipo de cobro configurado
+        if (reserva.tipo_cobro === 'efectivo') primeraPagina.drawText('X', { x: 191, y: 233, size: 15, font: fontBold });
+        if (reserva.tipo_cobro === 'cheque') primeraPagina.drawText('X', { x: 191, y: 204, size: 15, font: fontBold });
+        if (reserva.tipo_cobro === 'transferencia') primeraPagina.drawText('X', { x: 191, y: 176, size: 15, font: fontBold });
+
+        primeraPagina.drawText(reserva.telefono, { x: 651, y: 144, size: 18, font: fontBold });
+        primeraPagina.drawText(fechaEventoStr, { x: 111, y: 86, size: 18, font: fontBold, color: rgb(0.1, 0.35, 0.2) });
+        primeraPagina.drawText(rangoPagoStr, { x: 220, y: 44, size: 18, font: fontBold });
+        primeraPagina.drawText(usuarioActivo, { x: 530, y: 93, size: 18, font: fontBold });
+
+        const filename = `Recibo_Folio_${reserva._id}.pdf`;
+        const savePath = path.join(carpetaDestino, filename);
+        
+        const pdfBytes = await pdfDoc.save();
+        fs.writeFileSync(savePath, pdfBytes);
+
+        return filename;
+    } catch (e) {
+        console.error("⚠️ Error interno generando el archivo PDF:", e);
+        return null;
+    }
+};
+
+// Módulo de envíos automatizados por Nodemailer (Gmail)
+const enviarReciboPorCorreo = async (reserva, filename) => {
+    if (!reserva.correo || reserva.correo === 'No proporcionado') return;
+
+    try {
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: process.env.EMAIL_USER || 'bamboo.salon.cancun@gmail.com',
+                pass: process.env.EMAIL_PASS // Tu password de aplicación de 16 dígitos de Google
+            }
+        });
+
+        const filePath = path.join(__dirname, '../public/recibos', filename);
+
+        const mailOptions = {
+            from: `"Salón BAMBOO" <${process.env.EMAIL_USER || 'bamboo.salon.cancun@gmail.com'}>`,
+            to: reserva.correo,
+            subject: `Confirmación de Recepción y Recibo Digital - Folio ${reserva._id.toString().substring(0,8).toUpperCase()}`,
+            html: `<p>Hola <b>${reserva.nombre_cliente}</b>,</p>
+                   <p>Hemos generado con éxito el comprobante digital de tu movimiento financiero para el evento programado el día <b>${new Date(reserva.fecha_evento).toLocaleDateString('es-MX')}</b>.</p>
+                   <p>Adjunto a este correo encontrarás el documento PDF oficial correspondiente a tu recibo de arrendamiento.</p>
+                   <br><p><i>Este es un correo automático, no es necesario responder. ¡Gracias por confiar en BAMBOO!</i></p>`,
+            attachments: [{ filename: 'Recibo_Bamboo.pdf', path: filePath }]
+        };
+
+        await transporter.sendMail(mailOptions);
+        console.log(`✉️ Correo enviado con éxito a: ${reserva.correo}`);
+    } catch (error) {
+        console.error("⚠️ No se pudo despachar el correo electrónico:", error.message);
+    }
+};
+
+// ========================================================
+// 🛡️ ENDPOINTS DEL CONTROLADOR
+// ========================================================
+
 exports.crearReserva = async (req, res) => {
   try {
-    // req.body contiene toda la información que enviaremos desde el formulario web
     const nuevaReserva = new Reservation(req.body);
     
-    // 🚀 CANDADO DE RESPALDO: Si por un error de red el frontend no envía el parámetro,
-    // el backend lo extrae de la sesión activa (req.user) antes de impactar Atlas.
     if (!nuevaReserva.creado_por || nuevaReserva.creado_por === 'Cliente Web / Manual') {
         if (req.user && req.user.nombre) {
             nuevaReserva.creado_por = req.user.nombre;
         }
     }
     
-    // Guardamos la reserva en MongoDB
     const reservaGuardada = await nuevaReserva.save();
+
+    // ✨ LOGICA PASO 1: Si es solicitud de reserva, procesamos el recibo
+    if (reservaGuardada.tipo_solicitud === 'reserva') {
+        const nombreOperador = reservaGuardada.creado_por;
+        const archivoNombre = await procesarYGuardarReciboPDF(reservaGuardada, nombreOperador);
+
+        if (archivoNombre) {
+            reservaGuardada.recibo_cloud_id = archivoNombre;
+            // Construimos la URL pública dinámica del servidor
+            reservaGuardada.recibo_url = `${req.protocol}://${req.get('host')}/recibos/${archivoNombre}`;
+            await reservaGuardada.save();
+
+            // Despachamos el correo si el cliente dejó su e-mail
+            await enviarReciboPorCorreo(reservaGuardada, archivoNombre);
+        }
+    }
     
-    // Le respondemos a la página web que todo salió bien (Status 201: Creado)
     res.status(201).json({ 
       mensaje: 'Reserva guardada en el carrito con éxito', 
       reserva: reservaGuardada 
     });
     
   } catch (error) {
-    // Si falta un dato obligatorio (como el nombre), mandamos error
-    res.status(400).json({ 
-      mensaje: 'Error al intentar guardar la reserva', 
-      error: error.message 
-    });
+    res.status(400).json({ mensaje: 'Error al intentar guardar la reserva', error: error.message });
   }
 };
 
-// Función para modificar una reserva existente (cuando el cliente edita su carrito)
 exports.modificarReserva = async (req, res) => {
   try {
-    // Obtenemos el ID de la reserva que viene en la URL
     const { id } = req.params; 
-    
-    // findByIdAndUpdate busca el ID y reemplaza los datos con lo nuevo que envíe el cliente
-    // { new: true } es para que el servidor nos devuelva la versión ya actualizada, no la vieja
     const reservaActualizada = await Reservation.findByIdAndUpdate(id, req.body, { new: true });
-    
     if (!reservaActualizada) {
       return res.status(404).json({ mensaje: 'No se encontró la reserva en el carrito' });
     }
-    
-    res.status(200).json({ 
-      mensaje: 'Reserva modificada correctamente', 
-      reserva: reservaActualizada 
-    });
-    
+    res.status(200).json({ mensaje: 'Reserva modificada correctamente', reserva: reservaActualizada });
   } catch (error) {
-    res.status(400).json({ 
-      mensaje: 'Error al intentar modificar la reserva', 
-      error: error.message 
-    });
+    res.status(400).json({ mensaje: 'Error al intentar modificar la reserva', error: error.message });
   }
 };
 
-// Función para eliminar una reserva del carrito
 exports.eliminarReserva = async (req, res) => {
   try {
-    // Obtenemos el ID de la reserva desde la URL
     const { id } = req.params; 
+    const reserva = await Reservation.findById(id);
     
-    // Le decimos a MongoDB que busque ese ID y lo borre por completo
-    const reservaEliminada = await Reservation.findByIdAndDelete(id);
-    
-    // Si no encuentra nada, avisamos que ya no existe
-    if (!reservaEliminada) {
-      return res.status(404).json({ mensaje: 'La reserva ya no existe o no se encontró' });
+    if (reserva && reserva.recibo_cloud_id) {
+        const pathArchivo = path.join(__dirname, '../public/recibos', reserva.recibo_cloud_id);
+        if (fs.existsSync(pathArchivo)) fs.unlinkSync(pathArchivo);
     }
+
+    const reservaEliminada = await Reservation.findByIdAndDelete(id);
+    if (!reservaEliminada) return res.status(404).json({ mensaje: 'La reserva ya no existe' });
     
-    // Respondemos que la operación fue un éxito
-    res.status(200).json({ 
-      mensaje: 'Reserva eliminada del carrito exitosamente'
-    });
-    
+    res.status(200).json({ mensaje: 'Reserva eliminada del carrito exitosamente' });
   } catch (error) {
-    res.status(400).json({ 
-      mensaje: 'Error al intentar eliminar la reserva', 
-      error: error.message 
-    });
+    res.status(400).json({ mensaje: 'Error al intentar eliminar la reserva', error: error.message });
   }
 };
 
-// Función para obtener los días ocupados (Para pintar el calendario)
 exports.obtenerFechasOcupadas = async (req, res) => {
   try {
-    // Buscamos todas las reservas que SÍ bloquean el día
-    // $nin significa "Not In" (Excluimos las canceladas y las que siguen en carrito)
-    const reservas = await Reservation.find({
-      estado: { $nin: ['cancelada', 'en_carrito'] } 
-    }).select('fecha_evento'); // .select() hace que MongoDB solo nos devuelva la fecha y no toda la información pesada del cliente
-
-    // Convertimos el resultado en una lista sencilla y limpia de fechas
+    const reservas = await Reservation.find({ estado: { $nin: ['cancelada', 'en_carrito'] } }).select('fecha_evento');
     const fechas = reservas.map(reserva => reserva.fecha_evento);
-
-    // Le enviamos la lista a la página web
-    res.status(200).json({ 
-      mensaje: 'Fechas ocupadas obtenidas correctamente', 
-      fechasOcupadas: fechas 
-    });
-    
+    res.status(200).json({ mensaje: 'Fechas ocupadas obtenidas correctamente', fechasOcupadas: fechas });
   } catch (error) {
-    res.status(500).json({ 
-      mensaje: 'Error al intentar obtener las fechas del calendario', 
-      error: error.message 
-    });
+    res.status(500).json({ mensaje: 'Error al intentar obtener las fechas del calendario', error: error.message });
   }
 };
 
-// Función para obtener los números del Panel de Control
 exports.obtenerEstadisticas = async (req, res) => {
   try {
-    // 1. Contamos cuántas están en el carrito
     const nuevas = await Reservation.countDocuments({ estado: 'en_carrito' });
-    
-    // 2. Contamos cuántas están confirmadas en total
     const confirmadas = await Reservation.countDocuments({ estado: 'confirmada' });
-    
-    // 3. Contamos los eventos confirmados que suceden desde hoy en adelante
     const hoy = new Date();
-    const proximas = await Reservation.countDocuments({ 
-        estado: 'confirmada', 
-        fecha_evento: { $gte: hoy } 
-    });
-
+    const proximas = await Reservation.countDocuments({ estado: 'confirmada', fecha_evento: { $gte: hoy } });
     res.status(200).json({ nuevas, proximas, confirmadas });
-    
   } catch (error) {
     res.status(500).json({ mensaje: 'Error al obtener estadísticas', error: error.message });
   }
 };
 
-// Función para obtener TODAS las reservas para la tabla del Panel
 exports.obtenerTodasLasReservas = async (req, res) => {
   try {
-    // Busca todas las reservas y las ordena por fecha de creación (las más nuevas primero)
     const reservas = await Reservation.find().sort({ createdAt: -1 });
     res.status(200).json(reservas);
   } catch (error) {
@@ -146,32 +217,19 @@ exports.obtenerTodasLasReservas = async (req, res) => {
   }
 };
 
-// Actualizar toda la información de una reserva (Modificar)
-// ========================================================
-// 1. ACTUALIZAR RESERVA OPERATIVA (NOTAS INCLUIDAS)
-// ========================================================
 exports.actualizarReserva = async (req, res) => {
     try {
         const idReserva = req.params.id;
         const datosNuevos = req.body;
         
-        // 🔮 SOLUCIÓN: Si viene usuario_accion del frontend lo usa, si no, busca el token o el fallback
         const nombreAdministrador = datosNuevos.usuario_accion || (req.user ? req.user.nombre : "Alexander");
-        const motivoCambio = datosNuevos.motivo_modificacion || "Actualización general de rutina";
+        const motivoChange = datosNuevos.motivo_modificacion || "Actualización general de rutina";
 
         const reservaPrevia = await Reservation.findById(idReserva);
-        if (!reservaPrevia) {
-            return res.status(404).json({ mensaje: "Reserva no encontrada en el sistema." });
-        }
+        if (!reservaPrevia) return res.status(404).json({ mensaje: "Reserva no encontrada." });
 
         const traducirEstado = (est) => {
-            const dic = {
-                'en_carrito': 'En Carrito',
-                'visita_agendada': 'Visita Agendada',
-                'pendiente_pago': 'Pendiente de Pago',
-                'confirmada': 'Confirmada',
-                'cancelada': 'Cancelada'
-            };
+            const dic = { 'en_carrito': 'En Carrito', 'visita_agendada': 'Visita Agendada', 'pendiente_pago': 'Pendiente de Pago', 'confirmada': 'Confirmada', 'cancelada': 'Cancelada' };
             return dic[est] || est;
         };
 
@@ -179,10 +237,7 @@ exports.actualizarReserva = async (req, res) => {
             if (!fechaStr) return 'Sin fecha';
             const partes = fechaStr.split('-');
             if (partes.length !== 3) return fechaStr;
-            const meses = [
-                'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
-                'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
-            ];
+            const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
             return `${partes[2]} de ${meses[parseInt(partes[1], 10) - 1]} de ${partes[0]}`;
         };
 
@@ -190,55 +245,41 @@ exports.actualizarReserva = async (req, res) => {
         const fechaNuevaISO = datosNuevos.fecha_evento || '';
 
         let bitacoraCambios = [];
-
-        if (reservaPrevia.nombre_cliente !== datosNuevos.nombre_cliente) {
-            bitacoraCambios.push(`• <b>Cliente:</b> Cambió de "${reservaPrevia.nombre_cliente}" a "${datosNuevos.nombre_cliente}"`);
-        }
-        if (reservaPrevia.correo !== datosNuevos.correo) {
-            bitacoraCambios.push(`• <b>Correo:</b> Cambió de "${reservaPrevia.correo}" a "${datosNuevos.correo}"`);
-        }
-        if (reservaPrevia.telefono !== datosNuevos.telefono) {
-            bitacoraCambios.push(`• <b>Teléfono:</b> Cambió de "${reservaPrevia.telefono}" a "${datosNuevos.telefono}"`);
-        }
-        if (fechaPreviaISO !== fechaNuevaISO) {
-            bitacoraCambios.push(`• <b>Fecha:</b> Movida del [${formatearFechaHumana(fechaPreviaISO)}] al [${formatearFechaHumana(fechaNuevaISO)}]`);
-        }
-        if (reservaPrevia.hora_inicio !== datosNuevos.hora_inicio || reservaPrevia.hora_fin !== datosNuevos.hora_fin) {
-            bitacoraCambios.push(`• <b>Horario:</b> Modificado de [${reservaPrevia.hora_inicio || '--:--'} a ${reservaPrevia.hora_fin || '--:--'}] a [${datosNuevos.hora_inicio} a ${datosNuevos.hora_fin}]`);
-        }
-        if (reservaPrevia.estado !== datosNuevos.estado) {
-            bitacoraCambios.push(`• <b>Estado:</b> Cambió de <span class="badge ${reservaPrevia.estado}">${traducirEstado(reservaPrevia.estado)}</span> a <span class="badge ${datosNuevos.estado}">${traducirEstado(datosNuevos.estado)}</span>`);
-        }
-        if (reservaPrevia.paquete !== datosNuevos.paquete) {
-            bitacoraCambios.push(`• <b>Paquete:</b> Modificado de "${reservaPrevia.paquete}" a "${datosNuevos.paquete}"`);
-        }
-        if (Number(reservaPrevia.horas_extras || 0) !== Number(datosNuevos.horas_extras || 0)) {
-            bitacoraCambios.push(`• <b>Horas Extra:</b> De ${reservaPrevia.horas_extras || 0} hrs a ${datosNuevos.horas_extras} hrs`);
-        }
-        if (reservaPrevia.sillas_adicionales !== datosNuevos.sillas_adicionales) {
-            bitacoraCambios.push(`• <b>Sillas Extra:</b> De ${reservaPrevia.sillas_adicionales || 0} a ${datosNuevos.sillas_adicionales} piezas`);
-        }
-        if (reservaPrevia.mesas_adicionales !== datosNuevos.mesas_adicionales) {
-            bitacoraCambios.push(`• <b>Mesas Extra:</b> De ${reservaPrevia.mesas_adicionales || 0} a ${datosNuevos.mesas_adicionales} unidades`);
-        }
-        if (reservaPrevia.solicitudes_adicionales !== datosNuevos.solicitudes_adicionales) {
-            const notasAntes = reservaPrevia.solicitudes_adicionales ? reservaPrevia.solicitudes_adicionales.trim() : 'Sin especificaciones';
-            const notasNuevas = datosNuevos.solicitudes_adicionales ? datosNuevos.solicitudes_adicionales.trim() : 'Sin especificaciones';
-            
-            bitacoraCambios.push(`• <b>Detalles Extra:</b> Cambió de [<i>${notasAntes}</i>] a [<i>${notasNuevas}</i>]`);
-        }
-        if (Number(reservaPrevia.total_calculado || 0) !== Number(datosNuevos.total_calculado || 0)) {
-            bitacoraCambios.push(`• <b>Monto Financiero:</b> El total se recalculó de $${Number(reservaPrevia.total_calculado || 0).toLocaleString('es-MX')} a $${Number(datosNuevos.total_calculado || 0).toLocaleString('es-MX')} MXN`);
-        }
+        if (reservaPrevia.nombre_cliente !== datosNuevos.nombre_cliente) bitacoraCambios.push(`• <b>Cliente:</b> Cambió de "${reservaPrevia.nombre_cliente}" a "${datosNuevos.nombre_cliente}"`);
+        if (reservaPrevia.correo !== datosNuevos.correo) bitacoraCambios.push(`• <b>Correo:</b> Cambió de "${reservaPrevia.correo}" a "${datosNuevos.correo}"`);
+        if (reservaPrevia.telefono !== datosNuevos.telefono) bitacoraCambios.push(`• <b>Teléfono:</b> Cambió de "${reservaPrevia.telefono}" a "${datosNuevos.telefono}"`);
+        if (fechaPreviaISO !== fechaNuevaISO) bitacoraCambios.push(`• <b>Fecha:</b> Movida del [${formatearFechaHumana(fechaPreviaISO)}] al [${formatearFechaHumana(fechaNuevaISO)}]`);
+        if (reservaPrevia.hora_inicio !== datosNuevos.hora_inicio || reservaPrevia.hora_fin !== datosNuevos.hora_fin) bitacoraCambios.push(`• <b>Horario:</b> Modificado de [${reservaPrevia.hora_inicio || '--:--'} a ${reservaPrevia.hora_fin || '--:--'}] a [${datosNuevos.hora_inicio} a ${datosNuevos.hora_fin}]`);
+        if (reservaPrevia.estado !== datosNuevos.estado) bitacoraCambios.push(`• <b>Estado:</b> Cambió de <span class="badge ${reservaPrevia.estado}">${traducirEstado(reservaPrevia.estado)}</span> a <span class="badge ${datosNuevos.estado}">${traducirEstado(datosNuevos.estado)}</span>`);
+        if (reservaPrevia.paquete !== datosNuevos.paquete) bitacoraCambios.push(`• <b>Paquete:</b> Modificado de "${reservaPrevia.paquete}" a "${datosNuevos.paquete}"`);
+        if (Number(reservaPrevia.horas_extras || 0) !== Number(datosNuevos.horas_extras || 0)) bitacoraCambios.push(`• <b>Horas Extra:</b> De ${reservaPrevia.horas_extras || 0} hrs a ${datosNuevos.horas_extras} hrs`);
+        if (reservaPrevia.sillas_adicionales !== datosNuevos.sillas_adicionales) bitacoraCambios.push(`• <b>Sillas Extra:</b> De ${reservaPrevia.sillas_adicionales || 0} a ${datosNuevos.sillas_adicionales} piezas`);
+        if (reservaPrevia.mesas_adicionales !== datosNuevos.mesas_adicionales) bitacoraCambios.push(`• <b>Mesas Extra:</b> De ${reservaPrevia.mesas_adicionales || 0} a ${datosNuevos.mesas_adicionales} unidades`);
+        if (reservaPrevia.solicitudes_adicionales !== datosNuevos.solicitudes_adicionales) bitacoraCambios.push(`• <b>Detalles Extra:</b> Cambió de [<i>${reservaPrevia.solicitudes_adicionales || 'Sin notas'}</i>] a [<i>${datosNuevos.solicitudes_adicionales || 'Sin notas'}</i>]`);
+        if (Number(reservaPrevia.total_calculado || 0) !== Number(datosNuevos.total_calculado || 0)) bitacoraCambios.push(`• <b>Monto Financiero:</b> El total se recalculó de $${Number(reservaPrevia.total_calculado || 0).toLocaleString('es-MX')} a $${Number(datosNuevos.total_calculado || 0).toLocaleString('es-MX')} MXN`);
 
         const reporteFinalDeCambios = bitacoraCambios.length > 0 ? bitacoraCambios.join('<br>') : '• Se actualizaron notas internas o parámetros de rutina.';
 
-        const nuevoTicketHistorial = {
-            usuario: nombreAdministrador,
-            fecha_cambio: new Date(),
-            motivo: motivoCambio,
-            detalles: reporteFinalDeCambios
-        };
+        const nuevoTicketHistorial = { usuario: nombreAdministrador, fecha_change: new Date(), fecha_cambio: new Date(), motivo: motivoChange, detalles: reporteFinalDeCambios };
+
+        // 🔄 LOGICA PASO 1: Si viene bandera de regeneración, eliminamos el PDF previo y creamos el nuevo
+        let camposReciboUpdate = {};
+        if (datosNuevos.regenerar_recibo === true && reservaPrevia.tipo_solicitud === 'reserva') {
+            if (reservaPrevia.recibo_cloud_id) {
+                const viejoPath = path.join(__dirname, '../public/recibos', reservaPrevia.recibo_cloud_id);
+                if (fs.existsSync(viejoPath)) fs.unlinkSync(viejoPath);
+            }
+            
+            // Creamos una simulación de la reserva con datos nuevos para pintar el PDF actualizado
+            const clonReservaParaPDF = { ...reservaPrevia._doc, ...datosNuevos };
+            const nuevoArchivo = await procesarYGuardarReciboPDF(clonReservaParaPDF, nombreAdministrador);
+            
+            if (nuevoArchivo) {
+                camposReciboUpdate.recibo_cloud_id = nuevoArchivo;
+                camposReciboUpdate.recibo_url = `${req.protocol}://${req.get('host')}/recibos/${nuevoArchivo}`;
+                nuevoTicketHistorial.detalles += `<br>• <b>Recibo Digital:</b> El archivo PDF fue regenerado con éxito debido a la actualización de parámetros financieros.`;
+            }
+        }
 
         const reservaActualizada = await Reservation.findByIdAndUpdate(
             idReserva,
@@ -256,7 +297,9 @@ exports.actualizarReserva = async (req, res) => {
                     sillas_adicionales: datosNuevos.sillas_adicionales,
                     mesas_adicionales: datosNuevos.mesas_adicionales,
                     solicitudes_adicionales: datosNuevos.solicitudes_adicionales, 
-                    total_calculado: datosNuevos.total_calculado
+                    total_calculado: datosNuevos.total_calculado,
+                    tipo_cobro: datosNuevos.tipo_cobro || reservaPrevia.tipo_cobro,
+                    ...camposReciboUpdate
                 },
                 $push: { historial_modificaciones: nuevoTicketHistorial }
             },
@@ -265,54 +308,39 @@ exports.actualizarReserva = async (req, res) => {
 
         res.json(reservaActualizada);
     } catch (error) {
-        console.error("Error crítico en el controlador de auditoría:", error);
-        res.status(500).json({ mensaje: "Error interno al procesar el historial avanzado", error });
+        console.error(error);
+        res.status(500).json({ mensaje: "Error interno al procesar el historial avanzado", error: error.message });
     }
 };
 
-// ========================================================
-// 2. INCREMENTAR ANTICIPO (AUDITORÍA INCORPORADA)
-// ========================================================
-
-
-// Lógica matemática para abonar anticipos
 exports.incrementarAnticipo = async (req, res) => {
     try {
-        const { monto_adicional } = req.body;
+        const { monto_adicional, tipo_cobro } = req.body;
         const reserva = await Reservation.findById(req.params.id);
-        
         if (!reserva) return res.status(404).json({ mensaje: 'Reserva no encontrada' });
 
         const nuevoAnticipo = (reserva.anticipo_pagado || 0) + Number(monto_adicional);
-
         if (nuevoAnticipo > reserva.total_calculado) {
             const restante = reserva.total_calculado - (reserva.anticipo_pagado || 0);
-            return res.status(400).json({ 
-                mensaje: `El monto excede la deuda. Solo faltan $${restante} MXN para liquidar el evento.` 
-            });
+            return res.status(400).json({ mensaje: `El monto excede la deuda. Solo faltan $${restante} MXN para liquidar el evento.` });
         }
 
         const saldoAnterior = reserva.anticipo_pagado || 0;
         reserva.anticipo_pagado = nuevoAnticipo;
+        if (tipo_cobro) reserva.tipo_cobro = tipo_cobro;
 
-        if (reserva.anticipo_pagado === reserva.total_calculado) {
-            reserva.estado = 'confirmada'; 
-        }
+        if (reserva.anticipo_pagado === reserva.total_calculado) reserva.estado = 'confirmada'; 
 
-        // 📝 CONSOLIDACIÓN: Creamos el ticket de auditoría para el abono financiero
-        const nombreOperador = req.user ? req.user.nombre : "Alexander";
+        const nombreOperador = req.body.usuario_accion || (req.user ? req.user.nombre : "Alexander");
         const ticketPago = {
             usuario: nombreOperador,
+            fecha_change: new Date(),
             fecha_cambio: new Date(),
             motivo: "Registro de Abono / Anticipo",
-            detalles: `• <b>Abono Recibido:</b> $${Number(monto_adicional).toLocaleString('es-MX')} MXN<br>• <b>Historial de Anticipos:</b> Pasó de $${saldoAnterior.toLocaleString('es-MX')} a $${nuevoAnticipo.toLocaleString('es-MX')} MXN.<br>• <b>Estatus Comercial:</b> ${reserva.anticipo_pagado === reserva.total_calculado ? 'Liquidado / Confirmado' : 'Abonado'}`
+            detalles: `• <b>Abono Recibido:</b> $${Number(monto_adicional).toLocaleString('es-MX')} MXN<br>• <b>Método de Cobro:</b> ${tipo_cobro || 'No especificado'}<br>• <b>Historial de Anticipos:</b> Pasó de $${saldoAnterior.toLocaleString('es-MX')} a $${nuevoAnticipo.toLocaleString('es-MX')} MXN.`
         };
 
-        if (!reserva.historial_modificaciones) {
-            reserva.historial_modificaciones = [];
-        }
         reserva.historial_modificaciones.push(ticketPago);
-
         await reserva.save();
         res.status(200).json({ mensaje: 'Anticipo registrado con éxito', reserva });
     } catch (error) {
@@ -320,29 +348,99 @@ exports.incrementarAnticipo = async (req, res) => {
     }
 };
 
-// ========================================================
-// RUTA DE INICIO: OBTENER AGENDA DE LOS PRÓXIMOS 7 DÍAS
-// ========================================================
 exports.obtenerAgendaSemanal = async (req, res) => {
     try {
-        const hoy = new Date();
-        hoy.setHours(0, 0, 0, 0); // Desde las 00:00 del día actual
-
-        const enSieteDias = new Date();
-        enSieteDias.setDate(hoy.getDate() + 7);
-        enSieteDias.setHours(23, 59, 59, 999); // Hasta el final del séptimo día
-
-        // Buscamos eventos activos en este rango de fechas
-        const eventosSemanales = await Reservation.find({
-            fecha_evento: { $gte: hoy, $lte: enSieteDias },
-            estado: { $ne: 'cancelada' }
-        }).sort({ fecha_evento: 1, hora_inicio: 1 });
-
+        const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+        const enSieteDias = new Date(); enSieteDias.setDate(hoy.getDate() + 7); enSieteDias.setHours(23, 59, 59, 999);
+        const eventosSemanales = await Reservation.find({ fecha_evento: { $gte: hoy, $lte: enSieteDias }, estado: { $ne: 'cancelada' } }).sort({ fecha_evento: 1, hora_inicio: 1 });
         res.status(200).json(eventosSemanales);
     } catch (error) {
-        res.status(500).json({ 
-            mensaje: 'Error al obtener la agenda semanal operativa', 
-            error: error.message 
-        });
+        res.status(500).json({ mensaje: 'Error al obtener la agenda semanal operativa', error: error.message });
     }
 };
+
+// ✨ NUEVA ACCIÓN PASO 1: Eliminación manual de recibos desde detalles del folio
+exports.eliminarReciboManual = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const nombreOperador = req.body.usuario_accion || (req.user ? req.user.nombre : "Alexander");
+        const reserva = await Reservation.findById(id);
+
+        if (!reserva) return res.status(404).json({ mensaje: "Reserva no encontrada." });
+
+        if (reserva.recibo_cloud_id) {
+            const pathArchivo = path.join(__dirname, '../public/recibos', reserva.recibo_cloud_id);
+            if (fs.existsSync(pathArchivo)) fs.unlinkSync(pathArchivo);
+        }
+
+        reserva.recibo_url = '';
+        reserva.recibo_cloud_id = '';
+
+        const ticketBorrado = {
+            usuario: nombreOperador,
+            fecha_change: new Date(),
+            fecha_cambio: new Date(),
+            motivo: "Purga de Recibo Digital Manual",
+            detalles: `• <b>Acción Administrativa:</b> El archivo físico PDF del recibo de pago fue eliminado permanentemente del almacenamiento del servidor por orden directa del Staff.`
+        };
+        reserva.historial_modificaciones.push(ticketBorrado);
+        await reserva.save();
+
+        res.status(200).json({ mensaje: "El recibo físico ha sido purgado correctamente del almacenamiento", reserva });
+    } catch (e) {
+        res.status(500).json({ mensaje: "Error al purgar el recibo manual", error: e.message });
+    }
+};
+
+// ========================================================
+// ⏰ 4. SISTEMA CRON AUTOMATIZADO (AUTODESTRUCCIÓN Y ALERTAS)
+// ========================================================
+
+// Tarea diaria que corre automáticamente cada medianoche (00:00 AM)
+cron.schedule('0 0 * * *', async () => {
+    console.log("⏱️ Iniciando escaneo diario de mantenimiento preventivo BAMBOO...");
+    try {
+        const hoy = new Date();
+        
+        // --- FILTRO A: AUTODESTRUCCIÓN DE PDFS DESPUÉS DE 5 DÍAS ---
+        const limiteCincoDias = new Date();
+        limiteCincoDias.setDate(hoy.getDate() - 5);
+
+        // Buscamos eventos que terminaron hace más de 5 días y aún tienen recibo guardado
+        const recibosExpirados = await Reservation.find({
+            fecha_evento: { $lt: limiteCincoDias },
+            recibo_cloud_id: { $ne: '' }
+        });
+
+        for (const reserva of recibosExpirados) {
+            if (reserva.recibo_cloud_id) {
+                const pathArchivo = path.join(__dirname, '../public/recibos', reserva.recibo_cloud_id);
+                if (fs.existsSync(pathArchivo)) {
+                    fs.unlinkSync(pathArchivo); // Borramos el archivo físico del disco de Render
+                }
+            }
+            reserva.recibo_url = '';
+            reserva.recibo_cloud_id = '';
+            await reserva.save();
+            console.log(`🗑️ Recibo del folio ${reserva._id} purgado automáticamente por cumplimiento de límite de 5 días.`);
+        }
+
+        // --- FILTRO B: ALERTAS WEB PUSH PARA EL DÍA SIGUIENTE ---
+        const mananaInicio = new Date(); mananaInicio.setDate(hoy.getDate() + 1); mananaInicio.setHours(0,0,0,0);
+        const mananaFin = new Date(); mananaFin.setDate(hoy.getDate() + 1); mananaFin.setHours(23,59,59,999);
+
+        const eventosDeManana = await Reservation.find({
+            fecha_evento: { $gte: mananaInicio, $lte: mananaFin },
+            estado: { $ne: 'cancelada' }
+        });
+
+        eventosDeManana.forEach(evento => {
+            // Log operativo de control. Aquí se invoca la librería 'web-push' enviando la notificación
+            // a los Service Workers de las computadoras del Staff en la fase subsiguiente.
+            console.log(`📢 [ALERTA WEB PUSH CRON] Evento para mañana detectado: Cliente ${evento.nombre_cliente} - Horario: ${evento.hora_inicio}`);
+        });
+
+    } catch (error) {
+        console.error("⚠️ Error en la ejecución del mantenimiento CRON:", error.message);
+    }
+});

@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
+const dns = require('dns');
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 require('dns').setDefaultResultOrder('ipv4first');
 
@@ -86,7 +87,12 @@ const enviarReciboPorCorreo = async (reserva, filename) => {
             host: 'smtp.gmail.com',
             port: 465,
             secure: true, 
-            family: 4, // 🔌 SOLUCIÓN AL ENETUNREACH: Fuerza a la librería a usar estrictamente IPv4 en Render
+            // 🔌 EL CANDADO DEFINITIVO: Obliga a Nodemailer a resolver el dominio usando estrictamente IPv4
+            lookup: (hostname, options, callback) => {
+                dns.lookup(hostname, { family: 4 }, (err, address, family) => {
+                    callback(err, address, family);
+                });
+            },
             auth: {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASS 

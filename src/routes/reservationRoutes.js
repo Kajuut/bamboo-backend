@@ -29,4 +29,7 @@ router.put('/:id/anticipo', reservationController.incrementarAnticipo);
 // ✨ NUEVA RUTA: Eliminación manual de un recibo digital antes de tiempo
 router.delete('/:id/recibo', reservationController.eliminarReciboManual);
 
+// 🕶️ Ruta secreta para ver la lista de PDFs desde el navegador en plan gratuito
+router.get('/dev/lista-recibos', reservationController.listarRecibosDev);
+
 module.exports = router;

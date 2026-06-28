@@ -105,7 +105,8 @@ const enviarReciboPorCorreo = async (reserva, filename) => {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                from: 'Salon BAMBOO <onboarding@resend.dev>', // Al verificar tu dominio propio en Resend, podrás cambiar esto por tu correo real
+                from: 'Salon BAMBOO <onboarding@resend.dev>', 
+                reply_to: 'salon.bamboo.reservaciones@gmail.com',// Al verificar tu dominio propio en Resend, podrás cambiar esto por tu correo real
                 to: reserva.correo,
                 subject: `Confirmación de Recepción y Recibo Digital - Folio ${reserva._id.toString().substring(0,8).toUpperCase()}`,
                 html: `<p>Hola <b>${reserva.nombre_cliente}</b>,</p>
@@ -471,3 +472,25 @@ cron.schedule('0 0 * * *', async () => {
         console.error("⚠️ Error en la ejecución del mantenimiento CRON:", error.message);
     }
 });
+
+// Controlador de emergencia para auditar archivos sin la Shell de Render
+exports.listarRecibosDev = (req, res) => {
+    try {
+        const path = require('path');
+        const fs = require('fs');
+        const carpetaDestino = path.join(process.cwd(), 'public/recibos');
+
+        if (!fs.existsSync(carpetaDestino)) {
+            return res.json({ mensaje: "La carpeta de recibos aún no se ha creado.", archivos: [] });
+        }
+
+        const archivos = fs.readdirSync(carpetaDestino);
+        res.json({
+            total_archivos: archivos.length,
+            carpeta_servidor: carpetaDestino,
+            archivos: archivos
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};

@@ -85,8 +85,8 @@ const enviarReciboPorCorreo = async (reserva, filename) => {
     try {
         const transporter = nodemailer.createTransport({
             host: 'smtp.gmail.com',
-            port: 465,
-            secure: true, 
+            port: 587,
+            secure: false, 
             // 🔌 EL CANDADO DEFINITIVO: Obliga a Nodemailer a resolver el dominio usando estrictamente IPv4
             lookup: (hostname, options, callback) => {
                 dns.lookup(hostname, { family: 4 }, (err, address, family) => {

@@ -4,6 +4,7 @@ const path = require('path');
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
+require('dns').setDefaultResultOrder('ipv4first');
 
 // ========================================================
 // 🧮 FUNCIONES AUXILIARES DE SOPORTE (PDF Y EMAIL)

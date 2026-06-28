@@ -7,14 +7,20 @@ const dns = require('dns');
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 require('dns').setDefaultResultOrder('ipv4first');
 
+// ☁️ CONFIGURACIÓN SUPREMA DE CLOUDINARY CON CREDENCIALES ASIGNADAS
+const cloudinary = require('cloudinary').v2;
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'delesitvk',
+  api_key: process.env.CLOUDINARY_API_KEY || '355452653354782',
+  api_secret: process.env.CLOUDINARY_API_SECRET || 'v_-F6yewPD7z3QZ8yzWykTXg8HU'
+});
+
 // ========================================================
 // 🧮 FUNCIONES AUXILIARES DE SOPORTE (PDF Y EMAIL)
 // ========================================================
 
-// Función para generar el PDF físicamente en el servidor usando tus coordenadas exactas
 const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
     try {
-        // 🚀 SOLUCIÓN DEFINITIVA DE RUTAS: process.cwd() apunta a la raíz real de tu proyecto en Render
         const plantillaPath = path.join(process.cwd(), 'src/templates/Recibo.pdf');
         const carpetaDestino = path.join(process.cwd(), 'public/recibos');
 
@@ -71,33 +77,38 @@ const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
         const pdfBytes = await pdfDoc.save();
         fs.writeFileSync(savePath, pdfBytes);
 
-        return filename;
+        // 🚀 SUBIDA INMEDIATA A CLOUDINARY EN CARPETA SEPARADA
+        const uploadResult = await cloudinary.uploader.upload(savePath, {
+            folder: 'bamboo_recibos',
+            public_id: `Recibo_Folio_${reserva._id}`,
+            resource_type: 'auto'
+        });
+
+        return {
+            filename: filename,
+            savePath: savePath,
+            secure_url: uploadResult.secure_url,
+            public_id: uploadResult.public_id
+        };
     } catch (e) {
-        console.error("⚠️ Error interno generando el archivo PDF:", e);
+        console.error("⚠️ Error interno generando o subiendo el archivo PDF:", e);
         return null;
     }
 };
 
-// Módulo de envíos automatizados por Nodemailer (Gmail)
-// ========================================================
-// ✉️ MÓDULO DE ENVÍOS PROFESIONALES VÍA RESEND API (HTTPS)
-// ========================================================
 const enviarReciboPorCorreo = async (reserva, filename) => {
     if (!reserva.correo || reserva.correo === 'No proporcionado') return;
 
     try {
-        // Apuntamos a la carpeta raíz pública de forma absoluta y segura
         const filePath = path.join(process.cwd(), 'public/recibos', filename);
         
         if (!fs.existsSync(filePath)) {
-            console.error(`⚠️ No se pudo enviar el correo: El archivo ${filename} no existe en el disco.`);
+            console.error(`⚠️ No se pudo enviar el correo: El archivo ${filename} no existe de forma temporal.`);
             return;
         }
 
-        // Convertimos el PDF físico en una cadena binaria Base64 para mandarlo por la API
         const pdfEnBase64 = fs.readFileSync(filePath).toString('base64');
 
-        // Disparamos la petición HTTPS directa al puerto 443 de Resend (Imposible de bloquear por Render)
         const respuestaAPI = await fetch('https://api.resend.com/emails', {
             method: 'POST',
             headers: {
@@ -106,7 +117,7 @@ const enviarReciboPorCorreo = async (reserva, filename) => {
             },
             body: JSON.stringify({
                 from: 'Salon BAMBOO <onboarding@resend.dev>', 
-                reply_to: 'salon.bamboo.reservaciones@gmail.com',// Al verificar tu dominio propio en Resend, podrás cambiar esto por tu correo real
+                reply_to: 'salon.bamboo.reservaciones@gmail.com',
                 to: reserva.correo,
                 subject: `Confirmación de Recepción y Recibo Digital - Folio ${reserva._id.toString().substring(0,8).toUpperCase()}`,
                 html: `<p>Hola <b>${reserva.nombre_cliente}</b>,</p>
@@ -116,15 +127,19 @@ const enviarReciboPorCorreo = async (reserva, filename) => {
                 attachments: [
                     {
                         filename: 'Recibo_Bamboo.pdf',
-                        content: pdfEnBase64 // Adjuntamos el archivo codificado de forma limpia
+                        content: pdfEnBase64
                     }
                 ]
             })
         });
 
-        if (respuestaAPI.ok) {
-            console.log(`✉️ ¡Recibo enviado con éxito vía Resend API a la dirección: ${reserva.correo}!`);
-        } else {
+        // 🗑️ LIMPIEZA ABSOLUTA DEL DISCO LOCAL EN CUANTO RESPONDE LA API
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`🗑️ Temporales borrados del servidor local: ${filename}`);
+        }
+
+        if (!respuestaAPI.ok) {
             const errorDetalle = await respuestaAPI.json();
             console.error("⚠️ Fallo en el servidor de Resend API:", errorDetalle);
         }
@@ -150,19 +165,17 @@ exports.crearReserva = async (req, res) => {
     
     const reservaGuardada = await nuevaReserva.save();
 
-    // ✨ LOGICA PASO 1: Si es solicitud de reserva, procesamos el recibo
     if (reservaGuardada.tipo_solicitud === 'reserva') {
         const nombreOperador = reservaGuardada.creado_por;
-        const archivoNombre = await procesarYGuardarReciboPDF(reservaGuardada, nombreOperador);
+        const pdfResult = await procesarYGuardarReciboPDF(reservaGuardada, nombreOperador);
 
-        if (archivoNombre) {
-            reservaGuardada.recibo_cloud_id = archivoNombre;
-            // Construimos la URL pública dinámica del servidor
-            reservaGuardada.recibo_url = `${req.protocol}://${req.get('host')}/recibos/${archivoNombre}`;
+        if (pdfResult) {
+            reservaGuardada.recibo_cloud_id = pdfResult.public_id;
+            reservaGuardada.recibo_url = pdfResult.secure_url;
             await reservaGuardada.save();
 
-            // Despachamos el correo si el cliente dejó su e-mail
-            enviarReciboPorCorreo(reservaGuardada, archivoNombre);
+            // Se ejecuta de manera asíncrona en segundo plano sin congelar la respuesta web
+            enviarReciboPorCorreo(reservaGuardada, pdfResult.filename);
         }
     }
     
@@ -194,15 +207,10 @@ exports.eliminarReserva = async (req, res) => {
     const { id } = req.params; 
     const reserva = await Reservation.findById(id);
     
-    // Si la reserva existe y tiene un recibo registrado, lo destruimos del disco
+    // 💥 PURGA DEFINITIVA DESDE LOS SERVIDORES DE CLOUDINARY
     if (reserva && reserva.recibo_cloud_id) {
-        // 🚀 RUTA CORREGIDA: Apunta exactamente a la raíz real donde se guardan tus PDFs
-        const pathArchivo = path.join(process.cwd(), 'public/recibos', reserva.recibo_cloud_id);
-        
-        if (fs.existsSync(pathArchivo)) {
-            fs.unlinkSync(pathArchivo);
-            console.log(`🗑️ Archivo físico purgado con éxito al eliminar reserva: ${reserva.recibo_cloud_id}`);
-        }
+        await cloudinary.uploader.destroy(reserva.recibo_cloud_id);
+        console.log(`🗑️ Archivo borrado de Cloudinary al eliminar reserva: ${reserva.recibo_cloud_id}`);
     }
 
     const reservaEliminada = await Reservation.findByIdAndDelete(id);
@@ -290,22 +298,21 @@ exports.actualizarReserva = async (req, res) => {
 
         const nuevoTicketHistorial = { usuario: nombreAdministrador, fecha_change: new Date(), fecha_cambio: new Date(), motivo: motivoChange, detalles: reporteFinalDeCambios };
 
-        // 🔄 LOGICA PASO 1: Si viene bandera de regeneración, eliminamos el PDF previo y creamos el nuevo
         let camposReciboUpdate = {};
         if (datosNuevos.regenerar_recibo === true && reservaPrevia.tipo_solicitud === 'reserva') {
             if (reservaPrevia.recibo_cloud_id) {
-                const viejoPath = path.join(__dirname, '../public/recibos', reservaPrevia.recibo_cloud_id);
-                if (fs.existsSync(viejoPath)) fs.unlinkSync(viejoPath);
+                await cloudinary.uploader.destroy(reservaPrevia.recibo_cloud_id).catch(() => {});
             }
             
-            // Creamos una simulación de la reserva con datos nuevos para pintar el PDF actualizado
             const clonReservaParaPDF = { ...reservaPrevia._doc, ...datosNuevos };
-            const nuevoArchivo = await procesarYGuardarReciboPDF(clonReservaParaPDF, nombreAdministrador);
+            const pdfResult = await procesarYGuardarReciboPDF(clonReservaParaPDF, nombreAdministrador);
             
-            if (nuevoArchivo) {
-                camposReciboUpdate.recibo_cloud_id = nuevoArchivo;
-                camposReciboUpdate.recibo_url = `${req.protocol}://${req.get('host')}/recibos/${nuevoArchivo}`;
-                nuevoTicketHistorial.detalles += `<br>• <b>Recibo Digital:</b> El archivo PDF fue regenerado con éxito debido a la actualización de parámetros financieros.`;
+            if (pdfResult) {
+                camposReciboUpdate.recibo_cloud_id = pdfResult.public_id;
+                camposReciboUpdate.recibo_url = pdfResult.secure_url;
+                nuevoTicketHistorial.detalles += `<br>• <b>Recibo Digital:</b> El archivo PDF fue regenerado y actualizado con éxito en la nube permanente de Cloudinary.`;
+                
+                enviarReciboPorCorreo(clonReservaParaPDF, pdfResult.filename);
             }
         }
 
@@ -387,7 +394,6 @@ exports.obtenerAgendaSemanal = async (req, res) => {
     }
 };
 
-// ✨ NUEVA ACCIÓN PASO 1: Eliminación manual de recibos desde detalles del folio
 exports.eliminarReciboManual = async (req, res) => {
     try {
         const { id } = req.params;
@@ -397,8 +403,7 @@ exports.eliminarReciboManual = async (req, res) => {
         if (!reserva) return res.status(404).json({ mensaje: "Reserva no encontrada." });
 
         if (reserva.recibo_cloud_id) {
-            const pathArchivo = path.join(__dirname, '../public/recibos', reserva.recibo_cloud_id);
-            if (fs.existsSync(pathArchivo)) fs.unlinkSync(pathArchivo);
+            await cloudinary.uploader.destroy(reserva.recibo_cloud_id).catch(() => {});
         }
 
         reserva.recibo_url = '';
@@ -409,32 +414,27 @@ exports.eliminarReciboManual = async (req, res) => {
             fecha_change: new Date(),
             fecha_cambio: new Date(),
             motivo: "Purga de Recibo Digital Manual",
-            detalles: `• <b>Acción Administrativa:</b> El archivo físico PDF del recibo de pago fue eliminado permanentemente del almacenamiento del servidor por orden directa del Staff.`
+            detalles: `• <b>Acción Administrativa:</b> El archivo PDF del recibo de pago fue eliminado permanentemente de la nube de Cloudinary por orden directa del Staff.`
         };
         reserva.historial_modificaciones.push(ticketBorrado);
         await reserva.save();
 
-        res.status(200).json({ mensaje: "El recibo físico ha sido purgado correctamente del almacenamiento", reserva });
+        res.status(200).json({ mensaje: "El recibo físico ha sido purgado correctamente de Cloudinary", reserva });
     } catch (e) {
         res.status(500).json({ mensaje: "Error al purgar el recibo manual", error: e.message });
     }
 };
 
 // ========================================================
-// ⏰ 4. SISTEMA CRON AUTOMATIZADO (AUTODESTRUCCIÓN Y ALERTAS)
+// ⏰ TAREA AUTOMÁTICA DIARIA DE CLOUDINARY
 // ========================================================
-
-// Tarea diaria que corre automáticamente cada medianoche (00:00 AM)
 cron.schedule('0 0 * * *', async () => {
-    console.log("⏱️ Iniciando escaneo diario de mantenimiento preventivo BAMBOO...");
+    console.log("⏱️ Iniciando escaneo diario de mantenimiento preventivo BAMBOO Cloud...");
     try {
         const hoy = new Date();
-        
-        // --- FILTRO A: AUTODESTRUCCIÓN DE PDFS DESPUÉS DE 5 DÍAS ---
         const limiteCincoDias = new Date();
         limiteCincoDias.setDate(hoy.getDate() - 5);
 
-        // Buscamos eventos que terminaron hace más de 5 días y aún tienen recibo guardado
         const recibosExpirados = await Reservation.find({
             fecha_evento: { $lt: limiteCincoDias },
             recibo_cloud_id: { $ne: '' }
@@ -442,73 +442,62 @@ cron.schedule('0 0 * * *', async () => {
 
         for (const reserva of recibosExpirados) {
             if (reserva.recibo_cloud_id) {
-                const pathArchivo = path.join(__dirname, '../public/recibos', reserva.recibo_cloud_id);
-                if (fs.existsSync(pathArchivo)) {
-                    fs.unlinkSync(pathArchivo); // Borramos el archivo físico del disco de Render
-                }
+                await cloudinary.uploader.destroy(reserva.recibo_cloud_id).catch(() => {});
             }
             reserva.recibo_url = '';
             reserva.recibo_cloud_id = '';
             await reserva.save();
-            console.log(`🗑️ Recibo del folio ${reserva._id} purgado automáticamente por cumplimiento de límite de 5 días.`);
+            console.log(`🗑️ Recibo ${reserva.recibo_cloud_id} purgado de Cloudinary tras 5 días.`);
         }
 
-        // --- FILTRO B: ALERTAS WEB PUSH PARA EL DÍA SIGUIENTE ---
         const mananaInicio = new Date(); mananaInicio.setDate(hoy.getDate() + 1); mananaInicio.setHours(0,0,0,0);
         const mananaFin = new Date(); mananaFin.setDate(hoy.getDate() + 1); mananaFin.setHours(23,59,59,999);
-
-        const eventosDeManana = await Reservation.find({
-            fecha_evento: { $gte: mananaInicio, $lte: mananaFin },
-            estado: { $ne: 'cancelada' }
-        });
+        const eventosDeManana = await Reservation.find({ fecha_evento: { $gte: mananaInicio, $lte: mananaFin }, estado: { $ne: 'cancelada' } });
 
         eventosDeManana.forEach(evento => {
-            // Log operativo de control. Aquí se invoca la librería 'web-push' enviando la notificación
-            // a los Service Workers de las computadoras del Staff en la fase subsiguiente.
-            console.log(`📢 [ALERTA WEB PUSH CRON] Evento para mañana detectado: Cliente ${evento.nombre_cliente} - Horario: ${evento.hora_inicio}`);
+            console.log(`📢 [ALERTA WEB PUSH CRON] Evento para mañana: ${evento.nombre_cliente}`);
         });
-
     } catch (error) {
-        console.error("⚠️ Error en la ejecución del mantenimiento CRON:", error.message);
+        console.error("⚠️ Error en el mantenimiento CRON:", error.message);
     }
 });
 
-// Controlador de emergencia para auditar archivos sin la Shell de Render
-exports.listarRecibosDev = (req, res) => {
+// ========================================================
+// 🕶️ CONTROLADORES PREMIUM PARA LA VENTANA SECRETA
+// ========================================================
+exports.listarRecibosDev = async (req, res) => {
     try {
-        const path = require('path');
-        const fs = require('fs');
-        const carpetaDestino = path.join(process.cwd(), 'public/recibos');
+        // Conexión viva a la API estructural de Cloudinary para auditar el folder real
+        const result = await cloudinary.api.resources({
+            type: 'upload',
+            prefix: 'bamboo_recibos/',
+            max_results: 100
+        });
 
-        if (!fs.existsSync(carpetaDestino)) {
-            return res.json({ mensaje: "La carpeta de recibos aún no se ha creado.", archivos: [] });
-        }
+        const archivosFormateados = result.resources.map(file => ({
+            public_id: file.public_id,
+            secure_url: file.secure_url,
+            created_at: file.created_at,
+            bytes: file.bytes,
+            format: file.format
+        }));
 
-        const archivos = fs.readdirSync(carpetaDestino);
         res.json({
-            total_archivos: archivos.length,
-            carpeta_servidor: carpetaDestino,
-            archivos: archivos
+            total_archivos: archivosFormateados.length,
+            carpeta_servidor: "Cloudinary Nube Destino (Carpeta: bamboo_recibos)",
+            archivos: archivosFormateados
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
-// Endpoint de emergencia para destruir archivos físicos por nombre desde la ventana secreta
-exports.borrarReciboDirectoDev = (req, res) => {
-    try {
-        const path = require('path');
-        const fs = require('fs');
-        const { filename } = req.params;
-        
-        const pathArchivo = path.join(process.cwd(), 'public/recibos', filename);
 
-        if (fs.existsSync(pathArchivo)) {
-            fs.unlinkSync(pathArchivo); // Borrado fulminante del disco
-            return res.json({ mensaje: `Archivo ${filename} eliminado con éxito del servidor.` });
-        } else {
-            return res.status(404).json({ mensaje: "El archivo no se encuentra en el almacenamiento." });
-        }
+exports.borrarReciboDirectoDev = async (req, res) => {
+    try {
+        const { filename } = req.params; // Captura el public_id enviado por el Frontend
+        
+        await cloudinary.uploader.destroy(filename);
+        return res.json({ mensaje: `El archivo ${filename} fue destruido con éxito de Cloudinary.` });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

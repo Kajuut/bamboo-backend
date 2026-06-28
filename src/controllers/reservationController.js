@@ -14,7 +14,7 @@ require('dns').setDefaultResultOrder('ipv4first');
 const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
     try {
         // 🚀 SOLUCIÓN DEFINITIVA DE RUTAS: process.cwd() apunta a la raíz real de tu proyecto en Render
-        const plantillaPath = path.join(process.cwd(), 'templates/Recibo.pdf');
+        const plantillaPath = path.join(process.cwd(), 'src/templates/Recibo.pdf');
         const carpetaDestino = path.join(process.cwd(), 'public/recibos');
 
         if (!fs.existsSync(carpetaDestino)) {

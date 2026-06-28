@@ -85,11 +85,15 @@ const enviarReciboPorCorreo = async (reserva, filename) => {
 
     try {
         const transporter = nodemailer.createTransport({
-            service: 'gmail',
+            host: 'smtp.gmail.com',
+            port: 465,
+            secure: true, // Puerto seguro para transferencias SSL
             auth: {
-                user: process.env.EMAIL_USER || 'bamboo.salon.cancun@gmail.com',
-                pass: process.env.EMAIL_PASS // Tu password de aplicación de 16 dígitos de Google
-            }
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS 
+            },
+            connectionTimeout: 10000, // Máximo 10 segundos de espera. Si no conecta, aborta y no congela
+            greetingTimeout: 5000
         });
 
         const filePath = path.join(__dirname, '../public/recibos', filename);
@@ -140,7 +144,7 @@ exports.crearReserva = async (req, res) => {
             await reservaGuardada.save();
 
             // Despachamos el correo si el cliente dejó su e-mail
-            await enviarReciboPorCorreo(reservaGuardada, archivoNombre);
+            enviarReciboPorCorreo(reservaGuardada, archivoNombre);
         }
     }
     

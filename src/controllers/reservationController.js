@@ -471,6 +471,7 @@ exports.listarRecibosDev = async (req, res) => {
     try {
         // Conexión viva a la API estructural de Cloudinary para auditar el folder real
         const result = await cloudinary.api.resources({
+          resource_type: 'raw',
             type: 'upload',
             prefix: 'bamboo_recibos/',
             max_results: 100

@@ -227,8 +227,8 @@ exports.eliminarReserva = async (req, res) => {
     
     // 💥 PURGA DEFINITIVA DESDE LOS SERVIDORES DE CLOUDINARY
     if (reserva && reserva.recibo_cloud_id) {
-        await cloudinary.uploader.destroy(reserva.recibo_cloud_id);
-        console.log(`🗑️ Archivo borrado de Cloudinary al eliminar reserva: ${reserva.recibo_cloud_id}`);
+        await cloudinary.uploader.destroy(reserva.recibo_cloud_id, { resource_type: 'raw' });
+        console.log(`🗑_ Archivo borrado de Cloudinary al eliminar reserva: ${reserva.recibo_cloud_id}`);
     }
 
     const reservaEliminada = await Reservation.findByIdAndDelete(id);
@@ -319,7 +319,7 @@ exports.actualizarReserva = async (req, res) => {
         let camposReciboUpdate = {};
         if (datosNuevos.regenerar_recibo === true && reservaPrevia.tipo_solicitud === 'reserva') {
             if (reservaPrevia.recibo_cloud_id) {
-                await cloudinary.uploader.destroy(reservaPrevia.recibo_cloud_id).catch(() => {});
+                await cloudinary.uploader.destroy(reservaPrevia.recibo_cloud_id, { resource_type: 'raw' }).catch(() => {});
             }
             
             const clonReservaParaPDF = { ...reservaPrevia._doc, ...datosNuevos };
@@ -421,7 +421,7 @@ exports.eliminarReciboManual = async (req, res) => {
         if (!reserva) return res.status(404).json({ mensaje: "Reserva no encontrada." });
 
         if (reserva.recibo_cloud_id) {
-            await cloudinary.uploader.destroy(reserva.recibo_cloud_id).catch(() => {});
+            await cloudinary.uploader.destroy(reserva.recibo_cloud_id, { resource_type: 'raw' }).catch(() => {});
         }
 
         reserva.recibo_url = '';
@@ -460,7 +460,7 @@ cron.schedule('0 0 * * *', async () => {
 
         for (const reserva of recibosExpirados) {
             if (reserva.recibo_cloud_id) {
-                await cloudinary.uploader.destroy(reserva.recibo_cloud_id).catch(() => {});
+               await cloudinary.uploader.destroy(reserva.recibo_cloud_id, { resource_type: 'raw' }).catch(() => {});
             }
             reserva.recibo_url = '';
             reserva.recibo_cloud_id = '';
@@ -515,7 +515,7 @@ exports.borrarReciboDirectoDev = async (req, res) => {
     try {
         const { filename } = req.params; // Captura el public_id enviado por el Frontend
         
-        await cloudinary.uploader.destroy(filename);
+        await cloudinary.uploader.destroy(filename, { resource_type: 'raw' });
         return res.json({ mensaje: `El archivo ${filename} fue destruido con éxito de Cloudinary.` });
     } catch (error) {
         res.status(500).json({ error: error.message });

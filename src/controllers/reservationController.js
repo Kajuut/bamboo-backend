@@ -78,10 +78,12 @@ const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
         fs.writeFileSync(savePath, pdfBytes);
 
         // 🚀 SUBIDA INMEDIATA A CLOUDINARY EN CARPETA SEPARADA
+        // Antes tenías resource_type: 'auto'
+        // 🚀 Lo cambiamos a 'raw' para un manejo perfecto de documentos PDF
         const uploadResult = await cloudinary.uploader.upload(savePath, {
             folder: 'bamboo_recibos',
-            public_id: `Recibo_Folio_${reserva._id}`,
-            resource_type: 'auto'
+            public_id: `Recibo_Folio_${reserva._id}.pdf`, // Le agregamos explícitamente la extensión
+            resource_type: 'raw'
         });
 
         return {

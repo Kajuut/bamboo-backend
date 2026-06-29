@@ -98,56 +98,72 @@ const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
     }
 };
 
+// ========================================================
+// ✉️ MÓDULO DE ENVÍOS PROFESIONALES VÍA BREVO API (HTTPS)
+// ========================================================
 const enviarReciboPorCorreo = async (reserva, filename) => {
     if (!reserva.correo || reserva.correo === 'No proporcionado') return;
 
     try {
+        // Apuntamos a la carpeta raíz pública de forma absoluta y segura
         const filePath = path.join(process.cwd(), 'public/recibos', filename);
         
         if (!fs.existsSync(filePath)) {
-            console.error(`⚠️ No se pudo enviar el correo: El archivo ${filename} no existe de forma temporal.`);
+            console.error(`⚠️ No se pudo enviar el correo: El archivo ${filename} no existe en el disco temporal.`);
             return;
         }
 
+        // Convertimos el PDF físico en una cadena binaria Base64 para la API de Brevo
         const pdfEnBase64 = fs.readFileSync(filePath).toString('base64');
 
-        const respuestaAPI = await fetch('https://api.resend.com/emails', {
+        // Disparamos la petición HTTPS directa al endpoint v3 de Brevo (Puerto 443 seguro)
+        const respuestaAPI = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
-                'Content-Type': 'application/json'
+                'accept': 'application/json',
+                'api-key': process.env.BREVO_API_KEY, // Tu nueva llave de Brevo en Render
+                'content-type': 'application/json'
             },
             body: JSON.stringify({
-                from: 'Salon BAMBOO <onboarding@resend.dev>', 
-                reply_to: 'salon.bamboo.reservaciones@gmail.com',
-                to: reserva.correo,
+                sender: { 
+                    name: "Salon BAMBOO", 
+                    email: "salon.bamboo.reservaciones@gmail.com" // Tu Gmail verificado en Brevo
+                },
+                to: [
+                    { 
+                        email: reserva.correo, 
+                        name: reserva.nombre_cliente 
+                    }
+                ],
                 subject: `Confirmación de Recepción y Recibo Digital - Folio ${reserva._id.toString().substring(0,8).toUpperCase()}`,
-                html: `<p>Hola <b>${reserva.nombre_cliente}</b>,</p>
-                       <p>Hemos generado con éxito el comprobante digital de tu movimiento financiero para el evento programado el día <b>${new Date(reserva.fecha_evento).toLocaleDateString('es-MX')}</b>.</p>
-                       <p>Adjunto a este correo encontrarás el documento PDF oficial correspondiente a tu recibo de arrendamiento.</p>
-                       <br><p><i>Este es un correo automático, no es necesario responder. ¡Gracias por confiar en BAMBOO!</i></p>`,
-                attachments: [
+                htmlContent: `<p>Hola <b>${reserva.nombre_cliente}</b>,</p>
+                              <p>Hemos generado con éxito el comprobante digital de tu movimiento financiero para el evento programado el día <b>${new Date(reserva.fecha_evento).toLocaleDateString('es-MX')}</b>.</p>
+                              <p>Adjunto a este correo encontrarás el documento PDF oficial correspondiente a tu recibo de arrendamiento.</p>
+                              <br><p><i>Este es un correo automático, no es necesario responder. ¡Gracias por confiar en BAMBOO!</i></p>`,
+                attachment: [
                     {
-                        filename: 'Recibo_Bamboo.pdf',
-                        content: pdfEnBase64
+                        content: pdfEnBase64, // Cadena Base64 del archivo
+                        name: "Recibo_Bamboo.pdf" // Nombre con el que le llegará al cliente
                     }
                 ]
             })
         });
 
-        // 🗑️ LIMPIEZA ABSOLUTA DEL DISCO LOCAL EN CUANTO RESPONDE LA API
+        // 🗑️ LIMPIEZA ABSOLUTA: Purgamos el archivo local inmediatamente después de procesar la petición
         if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
-            console.log(`🗑️ Temporales borrados del servidor local: ${filename}`);
+            console.log(`🗑️ Archivo temporal eliminado con éxito del servidor local: ${filename}`);
         }
 
-        if (!respuestaAPI.ok) {
+        if (respuestaAPI.ok) {
+            console.log(`✉️ ¡Recibo enviado con éxito vía Brevo API a la dirección: ${reserva.correo}!`);
+        } else {
             const errorDetalle = await respuestaAPI.json();
-            console.error("⚠️ Fallo en el servidor de Resend API:", errorDetalle);
+            console.error("⚠️ Fallo en el servidor de Brevo API:", errorDetalle);
         }
 
     } catch (error) {
-        console.error("⚠️ Error crítico en el proceso de despacho por API:", error.message);
+        console.error("⚠️ Error crítico en el proceso de despacho por API de Brevo:", error.message);
     }
 };
 

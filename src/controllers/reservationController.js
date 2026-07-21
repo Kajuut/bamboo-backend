@@ -101,11 +101,14 @@ const procesarYGuardarReciboPDF = async (reserva, usuarioActivo) => {
 // ========================================================
 // ✉️ MÓDULO DE ENVÍOS PROFESIONALES VÍA BREVO API (HTTPS)
 // ========================================================
+// ========================================================
+// ✉️ MÓDULO DE ENVÍOS PROFESIONALES VÍA BREVO API (HTTPS)
+// ========================================================
 const enviarReciboPorCorreo = async (reserva, filename) => {
     if (!reserva.correo || reserva.correo === 'No proporcionado') return;
 
     try {
-        // Apuntamos a la carpeta raíz pública de forma absoluta y segura
+        // 1. Ruta y conversión del Recibo PDF dinámico
         const filePath = path.join(process.cwd(), 'public/recibos', filename);
         
         if (!fs.existsSync(filePath)) {
@@ -113,21 +116,41 @@ const enviarReciboPorCorreo = async (reserva, filename) => {
             return;
         }
 
-        // Convertimos el PDF físico en una cadena binaria Base64 para la API de Brevo
         const pdfEnBase64 = fs.readFileSync(filePath).toString('base64');
 
-        // Disparamos la petición HTTPS directa al endpoint v3 de Brevo (Puerto 443 seguro)
+        // 2. Construcción de la lista de adjuntos (Comenzamos con el Recibo)
+        const listaAdjuntos = [
+            {
+                content: pdfEnBase64,
+                name: "Recibo_Bamboo.pdf"
+            }
+        ];
+
+        // 3. 📜 ADJUNTO ADICIONAL: Carga e integración del Reglamento del Salón
+        const reglamentoPath = path.join(process.cwd(), 'src/templates/Reglamento.pdf');
+        if (fs.existsSync(reglamentoPath)) {
+            const reglamentoBase64 = fs.readFileSync(reglamentoPath).toString('base64');
+            listaAdjuntos.push({
+                content: reglamentoBase64,
+                name: "Reglamento_Salon_Bamboo.pdf"
+            });
+            console.log("📄 Reglamento.pdf adjuntado con éxito al paquete de correo.");
+        } else {
+            console.warn("⚠️ No se encontró Reglamento.pdf en 'src/templates/Reglamento.pdf'. Se enviará solo el recibo.");
+        }
+
+        // 4. Disparamos la petición HTTPS directa a la API de Brevo
         const respuestaAPI = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
                 'accept': 'application/json',
-                'api-key': process.env.BREVO_API_KEY, // Tu nueva llave de Brevo en Render
+                'api-key': process.env.BREVO_API_KEY,
                 'content-type': 'application/json'
             },
             body: JSON.stringify({
                 sender: { 
                     name: "Salon BAMBOO", 
-                    email: "salon.bamboo.reservaciones@gmail.com" // Tu Gmail verificado en Brevo
+                    email: "salon.bamboo.reservaciones@gmail.com"
                 },
                 to: [
                     { 
@@ -138,25 +161,20 @@ const enviarReciboPorCorreo = async (reserva, filename) => {
                 subject: `Confirmación de Recepción y Recibo Digital - Folio ${reserva._id.toString().substring(0,8).toUpperCase()}`,
                 htmlContent: `<p>Hola <b>${reserva.nombre_cliente}</b>,</p>
                               <p>Hemos generado con éxito el comprobante digital de tu movimiento financiero para el evento programado el día <b>${new Date(reserva.fecha_evento).toLocaleDateString('es-MX')}</b>.</p>
-                              <p>Adjunto a este correo encontrarás el documento PDF oficial correspondiente a tu recibo de arrendamiento.</p>
+                              <p>Adjunto a este correo encontrarás el documento PDF oficial correspondiente a tu recibo de arrendamiento, así como el <b>Reglamento Oficial</b> del Salón BAMBOO para tu conocimiento.</p>
                               <br><p><i>Este es un correo automático, no es necesario responder. ¡Gracias por confiar en BAMBOO!</i></p>`,
-                attachment: [
-                    {
-                        content: pdfEnBase64, // Cadena Base64 del archivo
-                        name: "Recibo_Bamboo.pdf" // Nombre con el que le llegará al cliente
-                    }
-                ]
+                attachment: listaAdjuntos
             })
         });
 
-        // 🗑️ LIMPIEZA ABSOLUTA: Purgamos el archivo local inmediatamente después de procesar la petición
+        // 🗑️ LIMPIEZA ABSOLUTA: Purgamos el recibo temporal del servidor local
         if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
             console.log(`🗑️ Archivo temporal eliminado con éxito del servidor local: ${filename}`);
         }
 
         if (respuestaAPI.ok) {
-            console.log(`✉️ ¡Recibo enviado con éxito vía Brevo API a la dirección: ${reserva.correo}!`);
+            console.log(`✉️ ¡Recibo y Reglamento enviados con éxito vía Brevo API a: ${reserva.correo}!`);
         } else {
             const errorDetalle = await respuestaAPI.json();
             console.error("⚠️ Fallo en el servidor de Brevo API:", errorDetalle);

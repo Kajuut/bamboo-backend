@@ -528,8 +528,10 @@ exports.ajustarMontoReserva = async (req, res) => {
                 reserva.recibo_cloud_id = pdfResult.public_id;
                 reserva.recibo_url = pdfResult.secure_url;
 
-                // Despacho automático de correo con Recibo nuevo + Reglamento.pdf adjunto
-                enviarReciboPorCorreo(reserva, pdfResult.filename);
+                // 🗑️ Limpieza preventiva: borramos el temporal del disco ya que no se enviará por Brevo
+                if (fs.existsSync(pdfResult.savePath)) {
+                    fs.unlinkSync(pdfResult.savePath);
+                }
             }
         }
 

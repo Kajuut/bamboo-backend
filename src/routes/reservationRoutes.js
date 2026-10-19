@@ -25,6 +25,8 @@ router.get('/todas', reservationController.obtenerTodasLasReservas);
 // Rutas de modificación y finanzas
 router.put('/:id', reservationController.actualizarReserva);
 router.put('/:id/anticipo', reservationController.incrementarAnticipo);
+// 💰 NUEVA RUTA: Ajuste manual de monto total y/o anticipo con regeneración forzosa de recibo
+router.put('/:id/ajustar-monto', reservationController.ajustarMontoReserva);
 
 // ✨ NUEVA RUTA: Eliminación manual de un recibo digital antes de tiempo
 router.delete('/:id/recibo', reservationController.eliminarReciboManual);

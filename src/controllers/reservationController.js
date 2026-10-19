@@ -419,6 +419,133 @@ exports.incrementarAnticipo = async (req, res) => {
     }
 };
 
+// ========================================================
+// 💰 CONTROLADOR FINANCIERO: AJUSTE MANUAL DE MONTO Y ANTICIPO
+// ========================================================
+exports.ajustarMontoReserva = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { nuevo_total, cambiar_anticipo, nuevo_anticipo, motivo_modificacion, usuario_accion } = req.body;
+
+        const reserva = await Reservation.findById(id);
+        if (!reserva) {
+            return res.status(404).json({ mensaje: "No se encontró la reservación en la base de datos." });
+        }
+
+        const nombreOperador = usuario_accion || (req.user ? req.user.nombre : "Administración BAMBOO");
+        const motivoChange = (motivo_modificacion && motivo_modificacion.trim() !== '') 
+            ? motivo_modificacion.trim() 
+            : "Ajuste manual de monto contractual / anticipo";
+
+        const totalAnterior = Number(reserva.total_calculado || 0);
+        const anticipoAnterior = Number(reserva.anticipo_pagado || 0);
+
+        // 1. Determinación de los nuevos valores
+        let totalFinal = (nuevo_total !== undefined && nuevo_total !== null && nuevo_total !== '') 
+            ? Number(nuevo_total) 
+            : totalAnterior;
+
+        let anticipoFinal = (cambiar_anticipo === true && nuevo_anticipo !== undefined && nuevo_anticipo !== null && nuevo_anticipo !== '')
+            ? Number(nuevo_anticipo)
+            : anticipoAnterior;
+
+        // 2. Filtros de validación estrictos
+        if (isNaN(totalFinal) || totalFinal < 0) {
+            return res.status(400).json({ mensaje: "El monto total debe ser un número válido mayor o igual a $0." });
+        }
+
+        if (isNaN(anticipoFinal) || anticipoFinal < 0) {
+            return res.status(400).json({ mensaje: "El monto de anticipo debe ser un número válido mayor o igual a $0." });
+        }
+
+        if (anticipoFinal > totalFinal) {
+            return res.status(400).json({ 
+                mensaje: `El anticipo ($${anticipoFinal.toLocaleString('es-MX')} MXN) no puede superar al monto total ($${totalFinal.toLocaleString('es-MX')} MXN).` 
+            });
+        }
+
+        const cambioEnTotal = totalFinal !== totalAnterior;
+        const cambioEnAnticipo = anticipoFinal !== anticipoAnterior;
+
+        if (!cambioEnTotal && !cambioEnAnticipo) {
+            return res.status(400).json({ mensaje: "No se ingresaron cambios numéricos en el monto ni en el anticipo." });
+        }
+
+        // 3. Recálculo automático del estado operativo
+        let nuevoEstado = reserva.estado;
+        if (reserva.estado !== 'cancelada' && reserva.estado !== 'concluido' && reserva.tipo_solicitud === 'reserva') {
+            if (anticipoFinal === totalFinal && totalFinal > 0) {
+                nuevoEstado = 'confirmada';
+            } else if (anticipoFinal > 0 && anticipoFinal < totalFinal) {
+                nuevoEstado = 'pendiente_pago';
+            } else if (anticipoFinal === 0) {
+                nuevoEstado = 'en_carrito';
+            }
+        }
+
+        // 4. Construcción detallada del reporte de auditoría
+        let bitacoraCambios = [];
+        if (cambioEnTotal) {
+            bitacoraCambios.push(`• <b>Monto Total:</b> Modificado de $${totalAnterior.toLocaleString('es-MX')} a $${totalFinal.toLocaleString('es-MX')} MXN.`);
+        }
+        if (cambioEnAnticipo) {
+            bitacoraCambios.push(`• <b>Anticipo en Caja:</b> Modificado de $${anticipoAnterior.toLocaleString('es-MX')} a $${anticipoFinal.toLocaleString('es-MX')} MXN.`);
+        }
+
+        const nuevoSaldoPendiente = totalFinal - anticipoFinal;
+        bitacoraCambios.push(`• <b>Saldo Restante Resultante:</b> $${nuevoSaldoPendiente.toLocaleString('es-MX')} MXN.`);
+
+        if (nuevoEstado !== reserva.estado) {
+            bitacoraCambios.push(`• <b>Estado:</b> Cambió de <span class="badge ${reserva.estado}">${reserva.estado.replace('_', ' ')}</span> a <span class="badge ${nuevoEstado}">${nuevoEstado.replace('_', ' ')}</span>.`);
+        }
+
+        bitacoraCambios.push(`• <b>Recibo Digital:</b> Archivo anterior purgado de Cloudinary y nuevo PDF regenerado con los parámetros modificados.`);
+
+        const nuevoTicketHistorial = {
+            usuario: nombreOperador,
+            fecha_change: new Date(),
+            fecha_cambio: new Date(),
+            motivo: motivoChange,
+            detalles: bitacoraCambios.join('<br>')
+        };
+
+        // 5. Asignación de nuevos valores a la reserva
+        reserva.total_calculado = totalFinal;
+        reserva.anticipo_pagado = anticipoFinal;
+        reserva.estado = nuevoEstado;
+        reserva.historial_modificaciones.push(nuevoTicketHistorial);
+
+        // 6. 💥 DESTRUCCIÓN DEL RECIBO VIEJO Y REGENERACIÓN FORZOSA (SIN PREGUNTAR)
+        if (reserva.tipo_solicitud === 'reserva') {
+            if (reserva.recibo_cloud_id && reserva.recibo_cloud_id !== '') {
+                await cloudinary.uploader.destroy(reserva.recibo_cloud_id, { resource_type: 'raw' }).catch((err) => {
+                    console.error("⚠️ Aviso: No se pudo destruir el recibo anterior en Cloudinary:", err.message);
+                });
+            }
+
+            const pdfResult = await procesarYGuardarReciboPDF(reserva, nombreOperador);
+            if (pdfResult) {
+                reserva.recibo_cloud_id = pdfResult.public_id;
+                reserva.recibo_url = pdfResult.secure_url;
+
+                // Despacho automático de correo con Recibo nuevo + Reglamento.pdf adjunto
+                enviarReciboPorCorreo(reserva, pdfResult.filename);
+            }
+        }
+
+        const reservaGuardada = await reserva.save();
+
+        res.status(200).json({
+            mensaje: "Monto y anticipo actualizados correctamente. Recibo regenerado.",
+            reserva: reservaGuardada
+        });
+
+    } catch (error) {
+        console.error("⚠️ Error crítico en ajustarMontoReserva:", error);
+        res.status(500).json({ mensaje: "Error interno del servidor al procesar el ajuste financiero.", error: error.message });
+    }
+};
+
 exports.obtenerAgendaSemanal = async (req, res) => {
     try {
         const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
